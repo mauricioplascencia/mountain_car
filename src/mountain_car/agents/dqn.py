@@ -38,13 +38,20 @@ class QNetwork(nn.Module):
          shape (B, action_dim).
     """
 
-    def __init__(self, state_dim: int, action_dim: int, hidden: int = 128) -> None:
+    def __init__(self, state_dim: int, action_dim: int, hidden: int = 128, exploration_steps: int = 20,) -> None:
         super().__init__()
-        raise NotImplementedError("EXERCISE 2a: build the Q-network")
+#       raise NotImplementedError("EXERCISE 2a: build the Q-network")
+        self.net = nn.Sequential( 
+            nn.Linear(state_dim, hidden), 
+            nn.ReLU(), 
+            nn.Linear(hidden, hidden), 
+            nn.ReLU(), 
+            nn.Linear(hidden, action_dim), 
+        ) 
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        raise NotImplementedError("EXERCISE 2a: implement forward()")
-
+#       raise NotImplementedError("EXERCISE 2a: implement forward()")
+        return self.net(x) 
 
 # ── Replay buffer ────────────────────────────────────────────────────
 
@@ -96,6 +103,7 @@ class DQNAgent:
         buffer_capacity: int = 100_000,
         target_update_freq: int = 10,
         hidden: int = 128,
+        exploration_steps: int = 20, 
     ) -> None:
         self.env_id = env_id
         self.lr = lr
@@ -107,6 +115,10 @@ class DQNAgent:
         self.buffer_capacity = buffer_capacity
         self.target_update_freq = target_update_freq
         self.hidden = hidden
+        self.exploration_steps = exploration_steps
+        self._explore_action: int | None = None
+        self._explore_steps_left = 0
+        
         self.training_episodes = 0
 
         env = gym.make(env_id)
@@ -146,8 +158,16 @@ class DQNAgent:
         from gentle to nearly-the-answer -- take only as many as you need. Try
         to diagnose it from your own measurements first.
         """
-        if not deterministic and random.random() < self.epsilon:
-            return random.randrange(self.action_dim)
+        if not deterministic:
+            if self._explore_steps_left > 0:
+                self._explore_steps_left -= 1
+                return self._explore_action
+
+        if random.random() < self.epsilon:
+            self._explore_action = random.randrange(self.action_dim)
+            self._explore_steps_left = self.exploration_steps - 1
+            return self._explore_action
+
         with torch.no_grad():
             t = torch.as_tensor(state, dtype=torch.float32, device=self.device).unsqueeze(0)
             return int(self.q_net(t).argmax(dim=1).item())
@@ -197,16 +217,39 @@ class DQNAgent:
         #      Tip: zero_grad() -> backward() -> step(), in that order.
         #
         # Return the scalar loss value (.item()).
-        raise NotImplementedError("EXERCISE 2b: implement the DQN learning step")
-
+#       raise NotImplementedError("EXERCISE 2b: implement the DQN learning step")
+        current_q = self.q_net(states_t).gather(1, actions_t) 
+ 
+        with torch.no_grad(): 
+            next_q = self.target_net(next_states_t).max( 
+                dim=1, keepdim=True 
+            ).values 
+ 
+            target_q = rewards_t + self.gamma * next_q * ( 
+                1.0 - terminateds_t 
+            ) 
+ 
+        loss = self.loss_fn(current_q, target_q) 
+ 
+        self.optimizer.zero_grad() 
+        loss.backward() 
+        self.optimizer.step() 
+ 
+        return float(loss.item()) 
     # ── training loop ─────────────────────────────────────────────────
 
     def train(self, total_episodes: int = 500, log_interval: int = 10) -> list[float]:
         env = gym.make(self.env_id)
         rewards_history: list[float] = []
 
+# Se hace ajuste  reiniciar el estado de exploración 
+# al comienzo de cada episodio
         for episode in range(1, total_episodes + 1):
             obs, _ = env.reset()
+
+            self._explore_action = None 
+            self._explore_steps_left = 0 
+
             total_reward = 0.0
             done = False
 
@@ -244,7 +287,8 @@ class DQNAgent:
         return rewards_history
 
     # ── persistence ───────────────────────────────────────────────────
-
+# Ajuste de los hiperparametros para incluir la exploración
+# exploration_steps
     _HPARAMS = (
         "env_id",
         "lr",
@@ -255,6 +299,7 @@ class DQNAgent:
         "buffer_capacity",
         "target_update_freq",
         "hidden",
+        "exploration_steps",
     )
 
     def save(self, path: Path) -> None:
